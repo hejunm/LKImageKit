@@ -137,6 +137,53 @@
     }
 }
 
+- (void)imageWithRequest:(LKImageRequest *)requestLV1 callback:(LKImageLoaderCallback)callback
+{
+    requestLV1.loaderCallback = callback;
+    NSOperation *op           = [NSBlockOperation blockOperationWithBlock:^{
+        requestLV1.isStarted = YES;
+        if (requestLV1.isCanceled||requestLV1.isFinished)
+        {
+            requestLV1.isFinished = YES;
+            requestLV1.error      = [LKImageError errorWithCode:LKImageErrorCodeCancel];
+            [requestLV1 loaderCallback:nil];
+            [requestLV1.loaderManagerCancelOperation cancel];
+            requestLV1.loaderManagerCancelOperation = nil;
+            return;
+        }
+        LKImageRequest *requestLV2 = nil;
+        if (requestLV1.keyForLoader && !requestLV1.synchronized) //没有key的不合并
+        {
+            requestLV2 = self.requestDic[requestLV1.keyForLoader];
+        }
+        if (!requestLV2)
+        {
+            requestLV2          = [requestLV1 createSuperRequest];
+            requestLV2.priority = requestLV1.priority;
+            requestLV2.loader   = [self loaderForRequest:requestLV1];
+            if (!requestLV2.loader)
+            {
+                requestLV2.error = [LKImageError errorWithDomain:LKImageErrorDomain code:LKImageErrorCodeLoaderNotFound userInfo:nil];
+                [requestLV2 loaderCallback:nil];
+                return;
+            }
+            
+            if (requestLV1.keyForLoader && !requestLV1.synchronized) //没有key的不合并
+            {
+                [self.requestDic setObject:requestLV2 forKey:requestLV1.keyForLoader];
+            }
+            
+            [self loadRequest:requestLV2];
+        }
+        else
+        {
+            
+            [requestLV2 addChildRequest:requestLV1];
+        }
+    }];
+    [self.queue lk_addOperation:op request:requestLV1];
+}
+
 - (id<LKImageLoaderProtocol>)loaderForRequest:(LKImageRequest *)request
 {
     for (id<LKImageLoaderProtocol> loader in self.loaderList)
@@ -149,17 +196,72 @@
     return nil;
 }
 
-- (void)requestDidFinished:(LKImageRequest *)requestLV2
+- (void)loadRequest:(LKImageRequest *)requestLV2
 {
-    if (!requestLV2.synchronized)
+    if ([requestLV2.loader respondsToSelector:@selector(dataWithRequest:callback:)])
     {
-        [self.requestDic removeObjectForKey:requestLV2.keyForLoader];
+        __weak __typeof(requestLV2) weakRequestLV2 = requestLV2;
+        requestLV2.loaderOperation = [NSBlockOperation blockOperationWithBlock:^{
+            __strong __typeof(requestLV2) strongRequestV2 = weakRequestLV2;
+            if (!strongRequestV2) {
+                return;
+            }
+            if (strongRequestV2.isCanceled)
+            {
+                return;
+            }
+            LKDispatch(strongRequestV2.synchronized, strongRequestV2.loader.gcd_queue, ^{
+                if (strongRequestV2.isCanceled)
+                {
+                    dispatch_semaphore_signal(strongRequestV2.loader.semaphore);
+                    return;
+                }
+                strongRequestV2.isStarted = YES;
+                [strongRequestV2.loader dataWithRequest:strongRequestV2
+                                               callback:^(LKImageRequest *requestLV2, NSData *data, float progress, NSError *error) {
+                                                   [self loadDataRequestFinished:strongRequestV2 data:data progress:progress error:error];
+                                               }];
+            });
+            if (!strongRequestV2.synchronized)
+            {
+                dispatch_semaphore_wait(strongRequestV2.loader.semaphore, DISPATCH_TIME_FOREVER);
+            }
+            strongRequestV2.loaderOperation = nil;
+        }];
+        
+        [requestLV2.loader.queue lk_addOperation:requestLV2.loaderOperation request:requestLV2];
     }
-    requestLV2.isFinished = YES;
-    for (LKImageRequest *requestLV1 in requestLV2.requestList)
+    else if ([requestLV2.loader respondsToSelector:@selector(imageWithRequest:callback:)])
     {
-        requestLV1.isFinished = YES;
-        [requestLV1.loaderManagerCancelOperation cancel];
+        NSOperation *op = [NSBlockOperation blockOperationWithBlock:^{
+            if (requestLV2.isCanceled)
+            {
+                return;
+            }
+            LKDispatch(requestLV2.synchronized, requestLV2.loader.gcd_queue, ^{
+                if (requestLV2.isCanceled)
+                {
+                    dispatch_semaphore_signal(requestLV2.loader.semaphore);
+                    return;
+                }
+                requestLV2.isStarted = YES;
+                [requestLV2.loader imageWithRequest:requestLV2
+                                           callback:^(LKImageRequest *requestLV2, UIImage *image, float progress, NSError *error) {
+                                               [self loadImageRequestFinished:requestLV2 image:image progress:progress error:error];
+                                           }];
+                
+            });
+            if (!requestLV2.synchronized)
+            {
+                dispatch_semaphore_wait(requestLV2.loader.semaphore, DISPATCH_TIME_FOREVER);
+            }
+        }];
+        [requestLV2.loader.queue lk_addOperation:op request:requestLV2];
+    }
+    else
+    {
+        requestLV2.error = [LKImageError errorWithCode:LKImageErrorCodeInvalidLoader];
+        [requestLV2 loaderCallback:nil];
     }
 }
 
@@ -287,120 +389,18 @@
     [self.queue lk_addOperation:op request:requestLV2];
 }
 
-- (void)loadRequest:(LKImageRequest *)requestLV2
+- (void)requestDidFinished:(LKImageRequest *)requestLV2
 {
-    if ([requestLV2.loader respondsToSelector:@selector(dataWithRequest:callback:)])
+    if (!requestLV2.synchronized)
     {
-        __weak __typeof(requestLV2) weakRequestLV2 = requestLV2;
-        requestLV2.loaderOperation = [NSBlockOperation blockOperationWithBlock:^{
-            __strong __typeof(requestLV2) strongRequestV2 = weakRequestLV2;
-            if (!strongRequestV2) {
-                return;
-            }
-            if (strongRequestV2.isCanceled)
-            {
-                return;
-            }
-            LKDispatch(strongRequestV2.synchronized, strongRequestV2.loader.gcd_queue, ^{
-                if (strongRequestV2.isCanceled)
-                {
-                    dispatch_semaphore_signal(strongRequestV2.loader.semaphore);
-                    return;
-                }
-                strongRequestV2.isStarted = YES;
-                [strongRequestV2.loader dataWithRequest:strongRequestV2
-                                          callback:^(LKImageRequest *requestLV2, NSData *data, float progress, NSError *error) {
-                                              [self loadDataRequestFinished:strongRequestV2 data:data progress:progress error:error];
-                                          }];
-            });
-            if (!strongRequestV2.synchronized)
-            {
-                dispatch_semaphore_wait(strongRequestV2.loader.semaphore, DISPATCH_TIME_FOREVER);
-            }
-            strongRequestV2.loaderOperation = nil;
-        }];
-        
-        [requestLV2.loader.queue lk_addOperation:requestLV2.loaderOperation request:requestLV2];
+        [self.requestDic removeObjectForKey:requestLV2.keyForLoader];
     }
-    else if ([requestLV2.loader respondsToSelector:@selector(imageWithRequest:callback:)])
+    requestLV2.isFinished = YES;
+    for (LKImageRequest *requestLV1 in requestLV2.requestList)
     {
-        NSOperation *op = [NSBlockOperation blockOperationWithBlock:^{
-            if (requestLV2.isCanceled)
-            {
-                return;
-            }
-            LKDispatch(requestLV2.synchronized, requestLV2.loader.gcd_queue, ^{
-                if (requestLV2.isCanceled)
-                {
-                    dispatch_semaphore_signal(requestLV2.loader.semaphore);
-                    return;
-                }
-                requestLV2.isStarted = YES;
-                [requestLV2.loader imageWithRequest:requestLV2
-                                           callback:^(LKImageRequest *requestLV2, UIImage *image, float progress, NSError *error) {
-                                               [self loadImageRequestFinished:requestLV2 image:image progress:progress error:error];
-                                           }];
-                
-            });
-            if (!requestLV2.synchronized)
-            {
-                dispatch_semaphore_wait(requestLV2.loader.semaphore, DISPATCH_TIME_FOREVER);
-            }
-        }];
-        [requestLV2.loader.queue lk_addOperation:op request:requestLV2];
+        requestLV1.isFinished = YES;
+        [requestLV1.loaderManagerCancelOperation cancel];
     }
-    else
-    {
-        requestLV2.error = [LKImageError errorWithCode:LKImageErrorCodeInvalidLoader];
-        [requestLV2 loaderCallback:nil];
-    }
-}
-
-- (void)imageWithRequest:(LKImageRequest *)requestLV1 callback:(LKImageLoaderCallback)callback
-{
-    requestLV1.loaderCallback = callback;
-    NSOperation *op           = [NSBlockOperation blockOperationWithBlock:^{
-        requestLV1.isStarted = YES;
-        if (requestLV1.isCanceled||requestLV1.isFinished)
-        {
-            requestLV1.isFinished = YES;
-            requestLV1.error      = [LKImageError errorWithCode:LKImageErrorCodeCancel];
-            [requestLV1 loaderCallback:nil];
-            [requestLV1.loaderManagerCancelOperation cancel];
-            requestLV1.loaderManagerCancelOperation = nil;
-            return;
-        }
-        LKImageRequest *requestLV2 = nil;
-        if (requestLV1.keyForLoader && !requestLV1.synchronized) //没有key的不合并
-        {
-            requestLV2 = self.requestDic[requestLV1.keyForLoader];
-        }
-        if (!requestLV2)
-        {
-            requestLV2          = [requestLV1 createSuperRequest];
-            requestLV2.priority = requestLV1.priority;
-            requestLV2.loader   = [self loaderForRequest:requestLV1];
-            if (!requestLV2.loader)
-            {
-                requestLV2.error = [LKImageError errorWithDomain:LKImageErrorDomain code:LKImageErrorCodeLoaderNotFound userInfo:nil];
-                [requestLV2 loaderCallback:nil];
-                return;
-            }
-
-            if (requestLV1.keyForLoader && !requestLV1.synchronized) //没有key的不合并
-            {
-                [self.requestDic setObject:requestLV2 forKey:requestLV1.keyForLoader];
-            }
-
-            [self loadRequest:requestLV2];
-        }
-        else
-        {
-
-            [requestLV2 addChildRequest:requestLV1];
-        }
-    }];
-    [self.queue lk_addOperation:op request:requestLV1];
 }
 
 - (void)preloadWithRequest:(LKImageRequest *)request callback:(LKImagePreloadCallback)callback

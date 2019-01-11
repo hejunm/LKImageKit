@@ -83,6 +83,25 @@
     }
 }
 
+- (void)sendRequest:(LKImageRequest *)requestLV0
+{
+    [requestLV0 reset];
+    requestLV0.requestBeginDate = [NSDate date];
+    
+    if (![requestLV0 isKindOfClass:[LKImageRequest class]])
+    {
+        return;
+    }
+    if (requestLV0.identifier && [self checkAndLoadCache:requestLV0])
+    {
+        return;
+    }
+    else
+    {
+        [self combineRequest:requestLV0];
+    }
+}
+
 - (BOOL)checkAndLoadCache:(LKImageRequest *)requestLV0
 {
     __block BOOL result;
@@ -115,42 +134,6 @@
     return result;
 }
 
-- (void)requestDidFinished:(LKImageRequest *)requestLV1
-{
-    requestLV1.isFinished = YES;
-    if (!requestLV1.synchronized&&!requestLV1.isCanceled)
-    {
-        [self.requestDic removeObjectForKey:requestLV1.identifier];
-    }
-    LKImageLogVerbose([NSString stringWithFormat:@"ManagerRequestDidFinish:%@", requestLV1]);
-    atomic_fetch_add(&LKImageFinishRequestCount, requestLV1.requestList.count);
-    atomic_fetch_sub(&LKImageRunningRequestCount, requestLV1.requestList.count);
-    for (LKImageRequest *requestLV0 in requestLV1.requestList)
-    {
-        requestLV0.isFinished = YES;
-        [requestLV0.imageManagerCancelOperation cancel];
-    }
-}
-
-- (void)sendRequest:(LKImageRequest *)requestLV0
-{
-    [requestLV0 reset];
-    requestLV0.requestBeginDate = [NSDate date];
-
-    if (![requestLV0 isKindOfClass:[LKImageRequest class]])
-    {
-        return;
-    }
-    if (requestLV0.identifier && [self checkAndLoadCache:requestLV0])
-    {
-        return;
-    }
-    else
-    {
-        [self combineRequest:requestLV0];
-    }
-}
-
 - (void)combineRequest:(LKImageRequest *)requestLV0
 {
     requestLV0.isStarted = YES;
@@ -174,7 +157,7 @@
         {
             requestLV1 = [self.requestDic objectForKey:requestLV0.identifier];
         }
-
+        
         if (requestLV1)
         {
             LKImageLogVerbose([NSString stringWithFormat:@"ManagerRequestCombine:%@", requestLV1]);
@@ -190,7 +173,7 @@
                 [self.requestDic setObject:requestLV1 forKey:requestLV1.identifier];
             }
         }
-
+        
         [self loadRequest:requestLV1];
     }];
     [self.queue lk_addOperation:op request:requestLV0];
@@ -265,6 +248,23 @@
                                                  }];
                                                  [self.queue lk_addOperation:op request:requestLV1];
                                              }];
+}
+
+- (void)requestDidFinished:(LKImageRequest *)requestLV1
+{
+    requestLV1.isFinished = YES;
+    if (!requestLV1.synchronized&&!requestLV1.isCanceled)
+    {
+        [self.requestDic removeObjectForKey:requestLV1.identifier];
+    }
+    LKImageLogVerbose([NSString stringWithFormat:@"ManagerRequestDidFinish:%@", requestLV1]);
+    atomic_fetch_add(&LKImageFinishRequestCount, requestLV1.requestList.count);
+    atomic_fetch_sub(&LKImageRunningRequestCount, requestLV1.requestList.count);
+    for (LKImageRequest *requestLV0 in requestLV1.requestList)
+    {
+        requestLV0.isFinished = YES;
+        [requestLV0.imageManagerCancelOperation cancel];
+    }
 }
 
 - (void)cancelRequest:(LKImageRequest *)requestLV0
